@@ -1,0 +1,4 @@
+aws ecr get-login-password --region eu-north-1 | docker login --username AWS --password-stdin 640168428375.dkr.ecr.eu-north-1.amazonaws.com
+docker build --platform linux/arm64 -t genai/retizen .
+docker tag genai/retizen:latest 640168428375.dkr.ecr.eu-north-1.amazonaws.com/genai/retizen:latest
+docker push 640168428375.dkr.ecr.eu-north-1.amazonaws.com/genai/retizen:latest

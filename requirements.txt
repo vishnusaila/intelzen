@@ -1,0 +1,5 @@
+google-generativeai
+flask
+boto3
+aws-wsgi
+pip install google-generativeai==0.4.1
