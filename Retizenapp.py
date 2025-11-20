@@ -14,6 +14,7 @@ import requests # <-- UNCOMMENTED: Used for Google Maps Geocoding
 # ---------------- CONFIGURATION ----------------
 
 # ----------------------------------------------
+GEMINI_API_KEY = "AIzaSyBfvJVOK9idpF-c0q1TS1-jlUn4uyyhR8w" # NOTE: Using the key you provided for Gemini
 
 
 # ---------------- FLASK APP SETUP ----------------
@@ -415,4 +416,5 @@ if __name__ == "__main__":
     scheduler_thread.start()
 
     print("🚀 Retizen Flask backend running at http://127.0.0.1:3001/")
+
     app.run(port=3001, debug=True, use_reloader=False)
