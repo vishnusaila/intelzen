@@ -10,12 +10,20 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 import schedule
 import requests # <-- UNCOMMENTED: Used for Google Maps Geocoding
-
+import os
 # ---------------- CONFIGURATION ----------------
 
 # ----------------------------------------------
 GEMINI_API_KEY = "AIzaSyBfvJVOK9idpF-c0q1TS1-jlUn4uyyhR8w" # NOTE: Using the key you provided for Gemini
 
+
+
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")
+AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
+AWS_REGION = os.getenv("AWS_REGION")
+S3_BUCKET_NAME = os.getenv("S3_BUCKET_NAME")
+GEOCODE_API_KEY = os.getenv("GEOCODE_API_KEY")
 
 # ---------------- FLASK APP SETUP ----------------
 app = Flask(__name__)
