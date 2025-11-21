@@ -19,12 +19,14 @@ import uuid
 # Since this script runs locally, ensure your environment variables are set, 
 # or the fallbacks are used.
 
+
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")
 AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
 AWS_REGION = os.getenv("AWS_REGION")
 S3_BUCKET_NAME = os.getenv("S3_BUCKET_NAME")
 GEOCODE_API_KEY = os.getenv("GEOCODE_API_KEY")
+ 
 # ----------------------------------------------
 
 # ---------------- FLASK APP SETUP ----------------
