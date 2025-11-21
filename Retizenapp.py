@@ -27,7 +27,7 @@ GEOCODE_API_KEY = os.getenv("GEOCODE_API_KEY")
 
 # ---------------- FLASK APP SETUP ----------------
 app = Flask(__name__)
-CORS(app, origins=["https://subtle-sable-91ede8.netlify.app/"])
+CORS(app)
 
 
 # Configure Gemini
@@ -475,6 +475,7 @@ if __name__ == "__main__":
     print("🚀 Retizen Flask backend running at http://127.0.0.1:3001/")
 
     app.run(port=3001, debug=True, use_reloader=False)
+
 
 
 
