@@ -10,14 +10,8 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 import schedule
 import requests # <-- UNCOMMENTED: Used for Google Maps Geocoding
-import os
+
 # ---------------- CONFIGURATION ----------------
-
-# ----------------------------------------------
-GEMINI_API_KEY = "AIzaSyBfvJVOK9idpF-c0q1TS1-jlUn4uyyhR8w" # NOTE: Using the key you provided for Gemini
-
-
-
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")
 AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
@@ -25,9 +19,17 @@ AWS_REGION = os.getenv("AWS_REGION")
 S3_BUCKET_NAME = os.getenv("S3_BUCKET_NAME")
 GEOCODE_API_KEY = os.getenv("GEOCODE_API_KEY")
 
+# --- NEW: Geocoding Specific Configuration ---
+# NOTE: If this key is restricted to Gemini, you might need a separate key 
+# for the Google Maps Geocoding API if they are separate services.
+GEOCODE_API_KEY = "AIzaSyAr1Y049iJp1ZFKHYRnqa9AireOVkeBLpQ" 
+# ----------------------------------------------
+
+
 # ---------------- FLASK APP SETUP ----------------
 app = Flask(__name__)
 CORS(app)
+
 
 
 # Configure Gemini
@@ -407,51 +409,6 @@ def service_worker():
     return "", 204
 
 
-@app.route("/api/cases-with-images-json/<userid>", methods=["GET"])
-@app.route("/api/cases-with-images-json/<userid>", methods=["GET"])
-def get_cases_for_user(userid):
-    try:
-        s3 = get_s3_resource()
-        mstr_obj = s3.Object(S3_BUCKET_NAME, "Master/mockdata_with_category_images.json")
-        data = json.load(mstr_obj.get()["Body"])
-
-        user_cases = [case for case in data if str(case.get("User ID")) == str(userid)]
-
-        # --- TRANSFORM MASTER RECORDS TO FRONTEND FORMAT ---
-        formatted_cases = []
-        for case in user_cases:
-            formatted_cases.append({
-                "caseid": case.get("Case ID"),
-                "images": [
-                    {"fileUrl": m.get("url"), "type": m.get("type")}
-                    for m in case.get("MediaFiles", [])
-                ],
-                "jsonFiles": {
-                    "metadata": {
-                        "date": case.get("Date"),
-                        "city": case.get("Location"),
-                        "latitude": case.get("latitude"),
-                        "longitude": case.get("longitude")
-                    },
-                    "result": {
-                        "label": case.get("Category"),
-                        "Priority": case.get("Priority"),
-                        "reason": "",
-                        "department": case.get("Category"),
-                    }
-                },
-                "status": case.get("Status", "Unknown")
-            })
-
-        return jsonify({
-            "userid": userid,
-            "cases": formatted_cases,
-            "message": "User cases fetched successfully"
-        }), 200
-
-    except Exception as e:
-        print(f"❌ Error fetching user cases: {e}")
-        return jsonify({"error": "Failed to fetch user cases", "details": str(e)}), 500
 
 
 # ---------------- AWS LAMBDA HANDLER ----------------
@@ -473,11 +430,4 @@ if __name__ == "__main__":
     scheduler_thread.start()
 
     print("🚀 Retizen Flask backend running at http://127.0.0.1:3001/")
-
     app.run(port=3001, debug=True, use_reloader=False)
-
-
-
-
-
-
