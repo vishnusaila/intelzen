@@ -10,6 +10,7 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 import schedule
 import requests # <-- UNCOMMENTED: Used for Google Maps Geocoding
+import os
 
 # ---------------- CONFIGURATION ----------------
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
@@ -431,3 +432,4 @@ if __name__ == "__main__":
 
     print("🚀 Retizen Flask backend running at http://127.0.0.1:3001/")
     app.run(port=3001, debug=True, use_reloader=False)
+
