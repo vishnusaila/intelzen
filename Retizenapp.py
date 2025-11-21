@@ -407,28 +407,51 @@ def service_worker():
 
 
 @app.route("/api/cases-with-images-json/<userid>", methods=["GET"])
+@app.route("/api/cases-with-images-json/<userid>", methods=["GET"])
 def get_cases_for_user(userid):
-    """
-    Returns all cases from Master/mockdata_with_category_images.json
-    filtered by userid.
-    """
     try:
         s3 = get_s3_resource()
         mstr_obj = s3.Object(S3_BUCKET_NAME, "Master/mockdata_with_category_images.json")
         data = json.load(mstr_obj.get()["Body"])
 
-        # Filter by user id
         user_cases = [case for case in data if str(case.get("User ID")) == str(userid)]
+
+        # --- TRANSFORM MASTER RECORDS TO FRONTEND FORMAT ---
+        formatted_cases = []
+        for case in user_cases:
+            formatted_cases.append({
+                "caseid": case.get("Case ID"),
+                "images": [
+                    {"fileUrl": m.get("url"), "type": m.get("type")}
+                    for m in case.get("MediaFiles", [])
+                ],
+                "jsonFiles": {
+                    "metadata": {
+                        "date": case.get("Date"),
+                        "city": case.get("Location"),
+                        "latitude": case.get("latitude"),
+                        "longitude": case.get("longitude")
+                    },
+                    "result": {
+                        "label": case.get("Category"),
+                        "Priority": case.get("Priority"),
+                        "reason": "",
+                        "department": case.get("Category"),
+                    }
+                },
+                "status": case.get("Status", "Unknown")
+            })
 
         return jsonify({
             "userid": userid,
-            "cases": user_cases,
+            "cases": formatted_cases,
             "message": "User cases fetched successfully"
         }), 200
 
     except Exception as e:
         print(f"❌ Error fetching user cases: {e}")
         return jsonify({"error": "Failed to fetch user cases", "details": str(e)}), 500
+
 
 # ---------------- AWS LAMBDA HANDLER ----------------
 def handler(event, context):
@@ -451,4 +474,5 @@ if __name__ == "__main__":
     print("🚀 Retizen Flask backend running at http://127.0.0.1:3001/")
 
     app.run(port=3001, debug=True, use_reloader=False)
+
 
