@@ -14,16 +14,13 @@ import os
 # ---------------- CONFIGURATION ----------------
 
 # ----------------------------------------------
-GEMINI_API_KEY = "AIzaSyBfvJVOK9idpF-c0q1TS1-jlUn4uyyhR8w" # NOTE: Using the key you provided for Gemini
-
-
-
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")
 AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
 AWS_REGION = os.getenv("AWS_REGION")
-S3_BUCKET_NAME = os.getenv("S3_BUCKET_NAME")
+S3_BUCKET_NAME = os.getenv("AWS_S3_BUCKET_NAME")
 GEOCODE_API_KEY = os.getenv("GEOCODE_API_KEY")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+
 
 # ---------------- FLASK APP SETUP ----------------
 app = Flask(__name__)
@@ -90,12 +87,15 @@ def safe_generate(model, prompt):
 
 # ---------------- S3 HELPERS ----------------
 def get_s3_resource():
+    if not all([AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION]):
+        raise ValueError("AWS credentials or region not set!")
     return boto3.resource(
         "s3",
         region_name=AWS_REGION,
         aws_access_key_id=AWS_ACCESS_KEY_ID,
         aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
     )
+
 
 def save_result_to_s3(userid, caseid, result_data):
     """Save classification result to S3 bucket."""
@@ -453,77 +453,6 @@ def get_cases_for_user(userid):
         return jsonify({"error": "Failed to fetch user cases", "details": str(e)}), 500
 
 
-@app.route("/api/upload/<userid>/<category>", methods=["POST"])
-def upload_media(userid, category):
-    """
-    Handles file upload + metadata.
-    Stores files into:
-       s3://bucket/<userid>/<caseid>/Pending/
-    Also generates new case ID.
-    """
-    try:
-        # Generate CASE ID (auto-increment style)
-        caseid = str(int(time.time()))
-
-        # Extract metadata
-        description = request.form.get("description", "")
-        status = request.form.get("status", "Open")
-        date = request.form.get("date", datetime.datetime.utcnow().isoformat())
-
-        latitude = request.form.get("latitude", "0")
-        longitude = request.form.get("longitude", "0")
-        city = request.form.get("city", "undefined")
-        state = request.form.get("state", "undefined")
-
-        files = request.files.getlist("files")
-        if not files:
-            return jsonify({"error": "No files provided"}), 400
-
-        s3 = get_s3_resource()
-
-        # Upload each media file
-        for idx, file in enumerate(files):
-            ext = file.filename.split(".")[-1].lower()
-            key = f"{userid}/{caseid}/Pending/file_{idx}.{ext}"
-
-            s3.Bucket(S3_BUCKET_NAME).put_object(
-                Key=key,
-                Body=file.read(),
-                ContentType=file.mimetype,
-            )
-
-            print(f"✅ Uploaded file to S3: {key}")
-
-        # Save metadata.json
-        metadata = {
-            "description": description,
-            "category": category,
-            "status": status,
-            "date": date,
-            "latitude": latitude,
-            "longitude": longitude,
-            "city": city,
-            "state": state,
-        }
-
-        meta_key = f"{userid}/{caseid}/metadata.json"
-        s3.Bucket(S3_BUCKET_NAME).put_object(
-            Key=meta_key,
-            Body=json.dumps(metadata).encode("utf-8"),
-        )
-
-        print(f"📝 Uploaded metadata.json -> {meta_key}")
-
-        return jsonify({
-            "message": "Upload successful",
-            "caseId": caseid
-        }), 200
-
-    except Exception as e:
-        print(f"❌ Upload Failed: {e}")
-        return jsonify({"error": str(e)}), 500
-
-
 # ---------------- AWS LAMBDA HANDLER ----------------
 def handler(event, context):
     try:
@@ -545,7 +474,6 @@ if __name__ == "__main__":
     print("🚀 Retizen Flask backend running at http://127.0.0.1:3001/")
 
     app.run(port=3001, debug=True, use_reloader=False)
-
 
 
 
