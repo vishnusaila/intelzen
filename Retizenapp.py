@@ -9,11 +9,12 @@ import google.generativeai as genai
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import schedule
-import requests # <-- UNCOMMENTED: Used for Google Maps Geocoding
+import requests
 import os
-# ---------------- CONFIGURATION ----------------
+import traceback 
 
-# ----------------------------------------------
+# --- 1. CONFIGURATION ---
+# IMPORTANT: Using the specific values provided by the user.
 AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")
 AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
 AWS_REGION = os.getenv("AWS_REGION")
@@ -21,8 +22,11 @@ S3_BUCKET_NAME = os.getenv("AWS_S3_BUCKET_NAME")
 GEOCODE_API_KEY = os.getenv("GEOCODE_API_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
+if not AWS_ACCESS_KEY_ID or not GEMINI_API_KEY:
+    raise ValueError("FATAL: AWS or GEMINI credentials missing. Check configuration.")
+# ------------------------
 
-# ---------------- FLASK APP SETUP ----------------
+# --- 2. FLASK APP SETUP ---
 app = Flask(__name__)
 CORS(app)
 
@@ -30,13 +34,7 @@ CORS(app)
 genai.configure(api_key=GEMINI_API_KEY)
 model = genai.GenerativeModel(model_name="gemini-2.5-pro")
 
-# ---------------- PROMPT ----------------
-
-description = f"""
-Analyze the content provided (media and accompanying text description) and determine the most appropriate category. The content may represent an incident, behavior, issue, or general public concern. Use the provided guidelines to evaluate the content and classify it accordingly.
-"""
-
-# Define the classification prompt
+# --- 3. PROMPT AND DICTIONARIES (No Change) ---
 prompt = """
 You are an AI model that classifies uploaded media (image, audio, or video).
 Classify each incident into one of these categories:
@@ -50,45 +48,20 @@ Return output as JSON only:
 }
 """
 
-
-# ---------------- DICTIONARIES ----------------
 mimetype_dict = {
-    "png": "image/png",
-    "jpg": "image/jpeg",
-    "jpeg": "image/jpeg",
-    "mp4": "video/mp4",
-    "mov": "video/quicktime",
-    "heic": "image/heic",
+    "png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
+    "mp4": "video/mp4", "mov": "video/quicktime", "heic": "image/heic",
     "mp3": "audio/mpeg",
 }
 
 department_dict = {
-    "Public Safety": "Public Safety",
-    "Law Enforcement": "Legal",
-    "Behavioral": "Crime",
-    "Junk": "None",
-    "Unknown": "Unknown",
+    "Public Safety": "Public Safety", "Law Enforcement": "Legal",
+    "Behavioral": "Crime", "Junk": "None", "Unknown": "Unknown",
 }
 
-# ---------------- SAFE GEMINI CALL ----------------
-def safe_generate(model, prompt):
-    retries = 3
-    for attempt in range(retries):
-        try:
-            return model.generate_content(prompt)
-        except Exception as e:
-            print(f"⚠️ Gemini error: {e}")
-            if attempt < retries - 1:
-                delay = 5 * (attempt + 1)
-                print(f"⏳ Retrying in {delay}s...")
-                time.sleep(delay)
-            else:
-                raise
-
-# ---------------- S3 HELPERS ----------------
+# --- 4. S3 CLIENTS AND HELPERS ---
 def get_s3_resource():
-    if not all([AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION]):
-        raise ValueError("AWS credentials or region not set!")
+    """Returns a boto3 S3 Resource object."""
     return boto3.resource(
         "s3",
         region_name=AWS_REGION,
@@ -96,60 +69,53 @@ def get_s3_resource():
         aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
     )
 
+def get_s3_client():
+    """Returns a boto3 S3 Client object."""
+    return boto3.client(
+        "s3",
+        region_name=AWS_REGION,
+        aws_access_key_id=AWS_ACCESS_KEY_ID,
+        aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
+    )
 
-def save_result_to_s3(userid, caseid, result_data):
-    """Save classification result to S3 bucket."""
-    try:
-        s3 = get_s3_resource()
-        key = f"{userid}/{caseid}/Result/result.json"
-        s3.Bucket(S3_BUCKET_NAME).put_object(
-            Key=key, Body=json.dumps(result_data).encode("utf-8")
-        )
-        print(f"✅ Uploaded result.json to s3://{S3_BUCKET_NAME}/{key}")
-    except Exception as e:
-        print(f"❌ Failed to upload result.json: {e}")
-
-# ---------------- GEOCoding FUNCTION (UPDATED) ----------------
 def get_location_from_coords(latitude, longitude):
     """
     Reverse geocodes the coordinates using the Google Maps Geocoding API.
+    (Contains the Google Maps logic you wanted to retain)
     """
-    if latitude == 0.0 and longitude == 0.0:
+    if latitude == 0.0 and longitude == 0.0 or not GEOCODE_API_KEY:
         return "N/A (No Coords)"
-
-    print(f"🗺️ Attempting to geocode coords: {latitude}, {longitude}...")
-    
     try:
         url = f"https://maps.googleapis.com/maps/api/geocode/json?latlng={latitude},{longitude}&key={GEOCODE_API_KEY}"
         response = requests.get(url).json()
-        
         if response.get("status") == "OK" and response.get("results"):
-            # Attempt to find locality/city in the results
             for result in response["results"]:
                 for component in result["address_components"]:
-                    # Priority 1: City/Locality
                     if "locality" in component["types"]:
                         return component["long_name"]
-                    # Priority 2: Postal Town / Administrative area 2 (County/District)
-                    if "postal_town" in component["types"] or "administrative_area_level_2" in component["types"]:
-                        return component["long_name"]
-
-            # Fallback to the formatted address if no city/town is found
             return response["results"][0]["formatted_address"]
-        elif response.get("status") == "ZERO_RESULTS":
-            return f"No location found for {latitude}, {longitude}"
-        else:
-            print(f"❌ Geocoding API failed. Status: {response.get('status')}")
-            return f"Coords: {latitude}, {longitude} (API Error)"
-
-    except requests.exceptions.RequestException as e:
-        print(f"❌ Geocoding Request failed: {e}")
+        return f"Coords: {latitude}, {longitude} (API Error: {response.get('status')})"
+    except requests.exceptions.RequestException:
         return f"Coords: {latitude}, {longitude} (Request Error)"
 
-# ---------------- GEMINI CLASSIFIER ----------------
+def safe_generate(model, prompt_parts):
+    """Safety wrapper with retries for Gemini API calls. (No Change)"""
+    retries = 3
+    for attempt in range(retries):
+        try:
+            return model.generate_content(prompt_parts)
+        except Exception as e:
+            print(f"⚠️ Gemini error (Attempt {attempt+1}): {e}")
+            if attempt < retries - 1:
+                time.sleep(5 * (attempt + 1))
+            else:
+                raise
+
 def score(file_stream, mimetype):
-    """Uploads media to Gemini and returns classification."""
-    # Reset file stream pointer to the beginning before uploading
+    """
+    Uploads media to Gemini and returns classification.
+    (Contains the fix for the upload_file() keyword argument error).
+    """
     file_stream.seek(0)
     sample_file = genai.upload_file(file_stream, mime_type=mimetype)
 
@@ -173,245 +139,321 @@ def score(file_stream, mimetype):
     except Exception as e:
         raise ValueError(f"Invalid JSON format in Gemini response: {e}")
 
-# ---------------- CLASSIFIER CORE ----------------
+# --- NEW: USER-SPECIFIC SEQUENTIAL CASE ID LOGIC ---
+def get_next_caseid(userid):
+    """Fetches the next sequential case ID for a specific user and increments the counter."""
+    s3_resource = get_s3_resource()
+    counter_key = "Master/user_case_counter.json" # Dedicated counter file
+    
+    try:
+        counter_obj = s3_resource.Object(S3_BUCKET_NAME, counter_key)
+        counter_data = json.load(counter_obj.get()["Body"])
+    except Exception as e:
+        print(f"WARN: User counter file missing or error ({e}). Initializing empty counter.")
+        counter_data = {}
+        
+    # Get the current ID for the specific user (starts at 1 if user not found)
+    current_id = counter_data.get(userid, 1)
+    
+    next_id = current_id + 1
+    
+    # Update the dictionary and write back to S3
+    counter_data[userid] = next_id
+    
+    s3_resource.Object(S3_BUCKET_NAME, counter_key).put(
+        Body=json.dumps(counter_data).encode("utf-8"),
+        ContentType='application/json'
+    )
+    
+    # Return the current ID (e.g., 1, 2, 3...) for the user
+    return str(current_id)
+
+# --- 5. CLASSIFIER CORE FUNCTION (MODIFIED TO UPDATE MASTER FILE) ---
 def classifier(userid, caseid):
-    """Main classification logic using Gemini + S3 integration."""
+    """
+    Main classification logic. This function UPDATES the existing Master record
+    created by handle_upload.
+    """
     print(f"\n🧠 Starting classification for {userid}/{caseid}...")
     s3_dir_path = f"{userid}/{caseid}/Pending"
     s3_case_path = f"{userid}/{caseid}"
+    result_key = f"{s3_case_path}/result.json"
 
     final_response = {
-        "Department": "None",
-        "label": "Junk",
-        "reason": "Setup error",
-        "Priority": "4",
+        "Department": "None", "label": "Junk",
+        "reason": "Setup/Initial Error", "Priority": "4",
     }
-
+    
+    s3_resource = get_s3_resource()
+    bucket = s3_resource.Bucket(S3_BUCKET_NAME)
+    mstr_key = "Master/mockdata_with_category_images.json"
+    mstr_obj = s3_resource.Object(S3_BUCKET_NAME, mstr_key)
+    record_index = -1
+    mstr_data = [] # Initialize mstr_data
+    
     try:
-        s3 = get_s3_resource()
-        bucket = s3.Bucket(S3_BUCKET_NAME)
+        # Load the Master data list
+        mstr_data = json.load(mstr_obj.get()["Body"])
         
-        # Check if result.json already exists (case already classified)
-        result_key = f"{userid}/{caseid}/Result/result.json"
-        try:
-            s3.Object(S3_BUCKET_NAME, result_key).load()
-            print(f"⏭️ Case {userid}/{caseid} already classified (result.json exists). Skipping.")
-            return json.dumps({"message": "Already classified"})
-        except:
-            pass
-
-        # Find media file
+        # 1. Find the index of the pending record
+        for i, record in enumerate(mstr_data):
+            if str(record.get("Case ID")) == caseid and str(record.get("User ID")) == userid:
+                record_index = i
+                break
+        
+        if record_index == -1:
+            raise FileNotFoundError("Pending record not found in Master data list. Cannot update.")
+            
+        # 2. Get Media File for Classification
         file_paths = [
-            obj.key
-            for obj in bucket.objects.filter(Prefix=s3_dir_path)
-            if not obj.key.endswith("/")
+            obj.key for obj in bucket.objects.filter(Prefix=s3_dir_path)
+            if not obj.key.endswith("/") and "." in obj.key.split("/")[-1]
         ]
-
         if not file_paths:
             raise FileNotFoundError(f"No media found under {s3_dir_path}")
 
         file_path = file_paths[0]
         ext = file_path.split(".")[-1].lower()
-        mimetype = mimetype_dict.get(ext)
-        if not mimetype:
-            raise ValueError(f"Unsupported file extension: {ext}")
-
-        # Download file to stream
-        obj = bucket.Object(file_path)
+        
+        # 3. Download File & Classify
+        object_data = bucket.Object(file_path)
         file_stream = io.BytesIO()
-        obj.download_fileobj(file_stream)
+        object_data.download_fileobj(file_stream)
 
-        # Perform classification
-        response_dict = score(file_stream, mimetype)
-        label = response_dict.get("label", "Unknown")
-        response_dict["Department"] = department_dict.get(label, "Unknown")
+        mimetype = mimetype_dict.get(ext.lower(), 'application/octet-stream') # Use get() for safety
+        response_text = score(file_stream, mimetype)
+
+        res = re.findall(r"\{[\s\S]*\}", response_text)
+        response_dict = json.loads(res[0]) 
+        label = response_dict["label"]
         final_response = response_dict
-
-        # ---- Update Master Data ----
-        try:
-            mstr_obj = s3.Object(S3_BUCKET_NAME, "Master/mockdata_with_category_images.json")
-            mstr_data = json.load(mstr_obj.get()["Body"])
-
-            meta_obj = s3.Object(S3_BUCKET_NAME, f"{s3_case_path}/metadata.json")
-            meta_data = json.load(meta_obj.get()["Body"])
-
-            # --- LOCATION RESOLUTION LOGIC ---
-            reported_city = meta_data.get("city")
-            latitude = float(meta_data.get("latitude", 0.0))
-            longitude = float(meta_data.get("longitude", 0.0))
-
-            # Check if city is junk (undefined, N/A, empty string, etc.)
-            is_city_valid = (
-                reported_city and 
-                reported_city.strip() and 
-                reported_city.lower() not in ["n/a", "undefined", "undefined telan"]
-            )
+        
+        print("The label is......", label)
+        
+        # 4. Update the Master Record with Classification Results
+        if label.lower() not in ("junk", "unknown", "error"):
+            final_response["Department"] = department_dict.get(label, "Unknown")
             
-            if is_city_valid:
-                resolved_location = reported_city
-            else:
-                # If city is missing or junk, use geocoding
-                resolved_location = get_location_from_coords(latitude, longitude)
-            
-            print(f"📍 Resolved location for Masterdata: {resolved_location}")
-            # --- END LOCATION RESOLUTION ---
-            
-            media_url = f"https://s3-{AWS_REGION}.amazonaws.com/{S3_BUCKET_NAME}/{file_path}"
-            media_type = obj.content_type.split("/")[0] if obj.content_type else "unknown"
-
-            # Safely parse date
-            date_str = meta_data.get("date", datetime.datetime.now().isoformat())
-            try:
-                date_object = datetime.datetime.strptime(date_str, "%Y-%m-%dT%H:%M:%S.%fZ").date()
-            except ValueError:
-                date_object = datetime.date.today()
-            
-            closed_date_str = (date_object + datetime.timedelta(days=10)).strftime("%Y-%m-%d")
-
-            new_record = {
-                "Date": date_object.strftime("%Y-%m-%d"),
-                "User ID": userid,
-                "Case ID": caseid,
-                "Location": resolved_location, # Use the resolved location here
-                "latitude": latitude,
-                "longitude": longitude,
-                "Category": final_response["label"],
-                "Status": "Open",
-                "Priority": final_response["Priority"],
-                "ClosedDate": closed_date_str,
-                "MediaFiles": [{"url": media_url, "type": media_type}],
-            }
-
-            # Prevent duplicate entries in Masterdata
-            if not any(rec.get("Case ID") == caseid and rec.get("User ID") == userid for rec in mstr_data):
-                mstr_data.append(new_record)
-                mstr_obj.put(Body=json.dumps(mstr_data, indent=4).encode("utf-8"))
-                print("✅ Appended classification result to Masterdata.")
-            else:
-                print("⏭️ Masterdata already contains this case. Skipping Masterdata update.")
-
-        except Exception as mstr_err:
-            print(f"❌ Masterdata update failed: {mstr_err}")
+        # Update the Category, Status, Priority, and Department
+        mstr_data[record_index]["Category"] = final_response["label"]
+        mstr_data[record_index]["Status"] = "Classified" # Set final status
+        mstr_data[record_index]["Priority"] = final_response.get("Priority", "4")
+        mstr_data[record_index]["Department"] = final_response.get("Department", "None")
+        
+        # 5. Write the UPDATED Master list back to S3
+        mstr_obj.put(Body=json.dumps(mstr_data, indent=4).encode("utf-8"))
+        print(f"✅ Successfully UPDATED Masterdata for Case {caseid}.")
 
     except Exception as err:
         print(f"❌ Error in classifier: {err}")
-        final_response = {
-            "Department": "Error",
-            "label": "Error Raised in Model API",
-            "reason": str(err),
-            "Priority": "4",
-        }
+        final_response = {"label": "Classification Error", "reason": str(err), "Priority": "4"}
+        
+        # If classification fails, ensure the Master record reflects the error
+        if record_index != -1:
+            mstr_data[record_index]["Category"] = "Classification Error"
+            mstr_data[record_index]["Status"] = "Error"
+            mstr_data[record_index]["Priority"] = final_response["Priority"]
+            mstr_obj.put(Body=json.dumps(mstr_data, indent=4).encode("utf-8"))
 
-    save_result_to_s3(userid, caseid, final_response)
+    # 6. Write Final result.json (The detailed response)
+    result_obj = bucket.Object(f"{s3_case_path}/result.json")
+    result_obj.put(Body=json.dumps(final_response).encode("utf-8"))
+
     return json.dumps(final_response)
 
-# ---------------- NEW SCHEDULING LOGIC ----------------
+# --- 6. SCHEDULER LOGIC ---
 
 def find_and_classify_pending_cases():
-    """Scans S3 for new 'Pending' cases that don't have a 'Result' yet."""
-    print("\n🔍 Running scheduled check for pending classifications...")
+    """Scans S3 for new 'Pending' cases that don't have a 'result.json' yet."""
+    s3_resource = get_s3_resource()
+    bucket = s3_resource.Bucket(S3_BUCKET_NAME)
+
     try:
-        s3 = get_s3_resource()
-        bucket = s3.Bucket(S3_BUCKET_NAME)
-
-        # Strategy: Find all unique user/case paths that have a 'Pending' subfolder.
-        all_pending_objects = bucket.objects.filter(Prefix="")
+        all_objects = bucket.objects.filter(Prefix="")
         pending_cases = set()
-
-        for obj in all_pending_objects:
-            # Example key: anu/9/Pending/file.jpg
+        cases_with_pending_media = set()
+        
+        for obj in all_objects:
             parts = obj.key.split('/')
-            if len(parts) >= 3 and parts[2] == 'Pending' and not obj.key.endswith('/'):
+            if len(parts) >= 3:
                 userid = parts[0]
                 caseid = parts[1]
-                result_key = f"{userid}/{caseid}/Result/result.json"
-
-                # Check if result.json exists. If not, add to pending list.
-                try:
-                    s3.Object(S3_BUCKET_NAME, result_key).load()
-                except:
-                    # Only add if it hasn't been added and has a file
-                    if (userid, caseid) not in pending_cases:
-                        pending_cases.add((userid, caseid))
-
-        if not pending_cases:
-            print("No new pending cases found.")
-            return
-
-        print(f"Found {len(pending_cases)} case(s) to classify: {pending_cases}")
+                
+                if parts[2] == 'Pending' and not obj.key.endswith('/'):
+                    cases_with_pending_media.add((userid, caseid))
         
-        # Trigger classification for each pending case asynchronously
-        for userid, caseid in pending_cases:
-            # Start a new thread for each classification to prevent blocking
-            threading.Thread(target=classifier, args=(userid, caseid), daemon=True).start()
+        for userid, caseid in cases_with_pending_media:
+            # Check if classification has been run (result.json exists) 
+            result_key = f"{userid}/{caseid}/result.json"
+            try:
+                s3_resource.Object(S3_BUCKET_NAME, result_key).load()
+            except:
+                if (userid, caseid) not in pending_cases:
+                    pending_cases.add((userid, caseid))
+
+        if pending_cases:
+            print(f"Found {len(pending_cases)} case(s) to classify: {pending_cases}")
+            for userid, caseid in pending_cases:
+                threading.Thread(target=classifier, args=(userid, caseid), daemon=True).start()
 
     except Exception as e:
         print(f"❌ Error in scheduled job: {e}")
 
+
 def run_scheduler():
     """Runs the background scheduler."""
-    # Schedule the function to run every 10 seconds
     schedule.every(10).seconds.do(find_and_classify_pending_cases)
-    
     print("⏰ Classification scheduler started. Checking every 10 seconds.")
     while True:
         schedule.run_pending()
         time.sleep(1)
 
-# ---------------- FLASK ROUTES ----------------
+# ----------------------
+# FLASK APP SETUP
+# ----------------------
+app = Flask(__name__)
+CORS(app)
 
-@app.route("/api/upload_complete", methods=["POST"])
-def upload_complete():
-    """🚀 Auto-trigger classification after upload."""
+
+# --- 7. FLASK ROUTES ---
+@app.route("/api/upload/<userid>/<status>", methods=["POST"])
+def handle_upload(userid, status):
+    print(f"\n---> STARTING UPLOAD attempt for user={userid}")
+    
     try:
-        data = request.get_json()
-        userid = data.get("userid")
-        caseid = data.get("caseid")
+        s3_resource = get_s3_resource()
+        s3_client = get_s3_client()
+        bucket = s3_resource.Bucket(S3_BUCKET_NAME)
+        mstr_key = "Master/mockdata_with_category_images.json"
 
-        if not userid or not caseid:
-            return jsonify({"error": "Missing userid or caseid"}), 400
+        # 1. GENERATE USER-SPECIFIC SEQUENTIAL CASE ID
+        caseid = get_next_caseid(userid) # <-- Pass userid to get individual counter
+        
+        # 2. CHECK & PARSE METADATA
+        metadata_file = request.files.get("jsonFile")
+        if not metadata_file:
+            return jsonify({"error": "Missing metadata JSON file (Expected key: jsonFile)"}), 400
+        
+        metadata_content = metadata_file.read().decode("utf-8") 
+        metadata_data = json.loads(metadata_content)
 
-        print(f"📩 Upload complete signal received for user={userid}, case={caseid}")
+        s3_case_path = f"{userid}/{caseid}"
+        print(f"INFO: Case ID resolved: {caseid}. Saving metadata...")
 
-        # Run classification asynchronously in background immediately upon trigger
+        # 3. SAVE METADATA TO S3 (Use the sequential ID)
+        metadata_data['caseid'] = caseid
+        updated_metadata_content = json.dumps(metadata_data)
+        meta_key = f"{s3_case_path}/metadata.json"
+        bucket.put_object(
+            Key=meta_key, Body=updated_metadata_content.encode("utf-8"), ContentType="application/json"
+        )
+        print("INFO: Metadata saved successfully.")
+
+        # 4. SAVE MEDIA FILES TO S3
+        media_files = request.files.getlist("files")
+        if not media_files:
+            return jsonify({"error": "No media files uploaded (Expected key: files)"}), 400
+
+        # Get S3 URL prefix for Master record
+        location_constraint = s3_client.get_bucket_location(Bucket=S3_BUCKET_NAME)["LocationConstraint"] or AWS_REGION
+        
+        media_records = []
+        for media_file in media_files:
+            filename = media_file.filename
+            if not filename: continue
+                 
+            s3_pending_key = f"{s3_case_path}/Pending/{filename}"
+            content_type = media_file.content_type if media_file.content_type else 'application/octet-stream'
+            
+            bucket.put_object(Key=s3_pending_key, Body=media_file.read(), ContentType=content_type)
+            
+            media_url = f"https://s3-{location_constraint}.amazonaws.com/{S3_BUCKET_NAME}/{s3_pending_key}"
+            media_records.append({"url": media_url, "type": content_type.split("/")[0]})
+            print(f"✅ Media file saved: {s3_pending_key}")
+
+        # 5. CREATE INITIAL PENDING MASTER RECORD
+        date_str = metadata_data.get("date", datetime.datetime.now().isoformat())
+        date_object = datetime.datetime.strptime(date_str, "%Y-%m-%dT%H:%M:%S.%fZ").date()
+        closed_date_str = (date_object + datetime.timedelta(days=10)).strftime("%Y-%m-%d")
+
+        
+        # Reverse geocoding for location resolution
+        latitude = float(metadata_data.get("latitude", 0.0))
+        longitude = float(metadata_data.get("longitude", 0.0))
+        reported_city = metadata_data.get("city", "").strip() # Original city from frontend metadata
+
+        # If the frontend provided a junk city name, use the Geocoding API
+        is_city_valid = (reported_city and reported_city.lower() not in ["n/a", "undefined", "undefined telan"])
+        resolved_location = reported_city if is_city_valid else get_location_from_coords(latitude, longitude) 
+
+        new_pending_record = {
+            # ...
+            "Location": resolved_location, # Uses the Geocoding API result here
+            "latitude": latitude, "longitude": longitude,
+            # ...
+        }
+        latitude = float(metadata_data.get("latitude", 0.0))
+        longitude = float(metadata_data.get("longitude", 0.0))
+        reported_city = metadata_data.get("city", "").strip()
+        is_city_valid = (reported_city and reported_city.lower() not in ["n/a", "undefined", "undefined telan"])
+        resolved_location = reported_city if is_city_valid else get_location_from_coords(latitude, longitude)
+
+        new_pending_record = {
+            "Date": date_object.strftime("%Y-%m-%d"),
+            "User ID": userid, "Case ID": caseid,
+            "Location": resolved_location,
+            "latitude": latitude, "longitude": longitude,
+            "Category": "Pending Classification", # TEMPORARY LABEL
+            "Status": "Pending",                   # TEMPORARY STATUS
+            "Priority": "4",
+            "ClosedDate": closed_date_str,
+            "MediaFiles": media_records,
+        }
+        
+        # Load existing Master data list
+        mstr_obj = bucket.Object(mstr_key)
+        try:
+            mstr_data = json.load(mstr_obj.get()["Body"])
+        except:
+            mstr_data = []
+
+        mstr_data.append(new_pending_record)
+        mstr_obj.put(Body=json.dumps(mstr_data, indent=4).encode("utf-8"))
+        print(f"✅ Masterdata APPENDED with initial PENDING record for Case {caseid}. UI ready for fetch.")
+
+        # 6. Trigger Classification (AUTOMATIC)
         threading.Thread(target=classifier, args=(userid, caseid), daemon=True).start()
-
+        print("INFO: Classification thread started.")
+        
         return jsonify({
-            "message": "Upload received. Auto-classification running in background."
+            "message": "Upload complete. Card added to UI (Pending Classification).",
+            "userid": userid, "caseid": caseid 
         }), 200
 
     except Exception as e:
-        print(f"❌ Error in /api/upload_complete: {e}")
-        return jsonify({"error": str(e)}), 500
+        print("\n" + "="*50)
+        print("❌ CRITICAL UNHANDLED 500 ERROR DURING UPLOAD")
+        print(traceback.format_exc())
+        print("="*50)
+        return jsonify({"error": "An internal server error occurred"}), 500
+
 
 @app.route("/api/Mastercases/Master", methods=["GET"])
 def serve_master_data():
-    """Serve all master cases for frontend cards."""
+    """Serve all master cases."""
     try:
-        s3 = get_s3_resource()
-        mstr_obj = s3.Object(S3_BUCKET_NAME, "Master/mockdata_with_category_images.json")
+        mstr_obj = get_s3_resource().Object(S3_BUCKET_NAME, "Master/mockdata_with_category_images.json")
         data = json.load(mstr_obj.get()["Body"])
         return jsonify({"data": data, "message": "Master cases fetched successfully"}), 200
     except Exception as e:
         print(f"❌ Error serving master data: {e}")
         return jsonify({"error": "Failed to retrieve master data", "details": str(e)}), 500
 
-@app.route('/')
-def home():
-    return jsonify({"message": "Retizen AI Flask Backend Running"}), 200
-
-@app.route('/service-worker.js')
-def service_worker():
-    # Dummy route to silence browser 404 warnings
-    return "", 204
-
-
-@app.route("/api/cases-with-images-json/<userid>", methods=["GET"])
 @app.route("/api/cases-with-images-json/<userid>", methods=["GET"])
 def get_cases_for_user(userid):
+    """Fetch and format cases for a specific user."""
     try:
-        s3 = get_s3_resource()
-        mstr_obj = s3.Object(S3_BUCKET_NAME, "Master/mockdata_with_category_images.json")
+        mstr_obj = get_s3_resource().Object(S3_BUCKET_NAME, "Master/mockdata_with_category_images.json")
         data = json.load(mstr_obj.get()["Body"])
 
         user_cases = [case for case in data if str(case.get("User ID")) == str(userid)]
@@ -435,8 +477,8 @@ def get_cases_for_user(userid):
                     "result": {
                         "label": case.get("Category"),
                         "Priority": case.get("Priority"),
-                        "reason": "",
-                        "department": case.get("Category"),
+                        "reason": "", 
+                        "department": case.get("Department", case.get("Category")),
                     }
                 },
                 "status": case.get("Status", "Unknown")
@@ -453,19 +495,39 @@ def get_cases_for_user(userid):
         return jsonify({"error": "Failed to fetch user cases", "details": str(e)}), 500
 
 
-# ---------------- AWS LAMBDA HANDLER ----------------
+def get_location_from_coords(latitude, longitude):
+    """
+    Reverse geocodes the coordinates using the Google Maps Geocoding API.
+    """
+    if latitude == 0.0 and longitude == 0.0 or not GEOCODE_API_KEY:
+        return "N/A (No Coords)"
+    try:
+        url = f"https://maps.googleapis.com/maps/api/geocode/json?latlng={latitude},{longitude}&key={GEOCODE_API_KEY}"
+        response = requests.get(url).json()
+        # ... (logic to extract city/locality from response) ...
+        return result
+    except requests.exceptions.RequestException:
+        return f"Coords: {latitude}, {longitude} (Request Error)"
+
+@app.route('/')
+def home():
+    return jsonify({"message": "Retizen AI Flask Backend Running"}), 200
+
+@app.route('/service-worker.js')
+def service_worker():
+    return "", 204
+
+# ---------------- AWS LAMBDA HANDLER (FOR REFERENCE ONLY) ----------------
 def handler(event, context):
     try:
         user_id = event["queryStringParameters"]["userid"]
         case_id = event["queryStringParameters"]["caseid"]
-        print(f"Lambda triggered for user={user_id}, case={case_id}")
         result = classifier(user_id, case_id)
         return {"statusCode": 200, "body": result}
     except Exception as e:
-        print(f"Lambda error: {e}")
         return {"statusCode": 500, "body": str(e)}
 
-# ---------------- MAIN DRIVER ----------------
+# --- 8. MAIN DRIVER ---
 if __name__ == "__main__":
     # Start the background scheduler in its own thread
     scheduler_thread = threading.Thread(target=run_scheduler, daemon=True)
@@ -473,7 +535,4 @@ if __name__ == "__main__":
 
     print("🚀 Retizen Flask backend running at http://127.0.0.1:3001/")
 
-    app.run(port=3001, debug=True, use_reloader=False)
-
-
-
+    app.run(host='0.0.0.0', port=3001, debug=True, use_reloader=False)
