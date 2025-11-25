@@ -16,6 +16,9 @@ import os
 import traceback 
 
 # --- 1. CONFIGURATION ---
+
+
+
 AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")
 AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
 AWS_REGION = os.getenv("AWS_REGION")
@@ -113,9 +116,13 @@ def safe_generate(model, prompt_parts):
                 raise
 
 def score(file_stream, mimetype, custom_prompt=None):
-    """Uploads media to Gemini and returns classification."""
+    """
+    Uploads media to Gemini and returns classification.
+    FIX: Uses file= keyword argument.
+    """
     file_stream.seek(0)
-    sample_file = genai.upload_file(file_stream, mime_type=mimetype)
+    # FIX APPLIED HERE
+    sample_file = genai.upload_file(file=file_stream, mime_type=mimetype)
     
     final_prompt = custom_prompt if custom_prompt else prompt
 
