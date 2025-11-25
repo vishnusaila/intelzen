@@ -57,9 +57,8 @@ department_dict = {
 genai.configure(api_key=GEMINI_API_KEY)
 model = genai.GenerativeModel(
     model_name="gemini-2.5-pro",
-    generation_config=genai.types.GenerationConfig(
-        response_mime_type="application/json",
-    )
+    generation_config = genai.types.GenerationConfig()
+
 )
 
 # --- 4. S3 CLIENTS AND HELPERS ---
@@ -521,3 +520,4 @@ if __name__ == "__main__":
     print("🚀 Retizen Flask backend running at http://127.0.0.1:3001/")
 
     app.run(host='0.0.0.0', port=3001, debug=True, use_reloader=False)
+
