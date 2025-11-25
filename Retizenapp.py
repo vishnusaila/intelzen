@@ -25,8 +25,10 @@ S3_BUCKET_NAME = os.getenv("AWS_S3_BUCKET_NAME")
 GEOCODE_API_KEY = os.getenv("GEOCODE_API_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-if not AWS_ACCESS_KEY or not AWS_SECRET_KEY or not GEMINI_API_KEY:
+# Correct validation
+if not AWS_ACCESS_KEY_ID or not AWS_SECRET_ACCESS_KEY or not GEMINI_API_KEY:
     raise ValueError("FATAL: AWS or GEMINI credentials missing. Check configuration.")
+
 
 
 # ------------------------
@@ -664,4 +666,5 @@ print("🚀 Retizen Flask backend running at http://127.0.0.1:3001/")
 
 app.run(host='0.0.0.0', port=3001, debug=True, use_reloader=False)
 ```
+
 
