@@ -8,13 +8,15 @@ import threading
 import google.generativeai as genai
 from flask import Flask, request, jsonify
 from flask_cors import CORS
+from werkzeug.utils import secure_filename
 import schedule
 import requests
+from botocore.exceptions import ClientError
 import os
 import traceback 
 
 # --- 1. CONFIGURATION ---
-# IMPORTANT: Using the specific values provided by the user.
+
 AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")
 AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
 AWS_REGION = os.getenv("AWS_REGION")
@@ -26,15 +28,7 @@ if not AWS_ACCESS_KEY_ID or not GEMINI_API_KEY:
     raise ValueError("FATAL: AWS or GEMINI credentials missing. Check configuration.")
 # ------------------------
 
-# --- 2. FLASK APP SETUP ---
-app = Flask(__name__)
-CORS(app)
-
-# Configure Gemini
-genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel(model_name="gemini-2.5-pro")
-
-# --- 3. PROMPT AND DICTIONARIES (No Change) ---
+# --- 3. PROMPT AND DICTIONARIES ---
 prompt = """
 You are an AI model that classifies uploaded media (image, audio, or video).
 Classify each incident into one of these categories:
@@ -59,6 +53,15 @@ department_dict = {
     "Behavioral": "Crime", "Junk": "None", "Unknown": "Unknown",
 }
 
+# Configure Gemini
+genai.configure(api_key=GEMINI_API_KEY)
+model = genai.GenerativeModel(
+    model_name="gemini-2.5-pro",
+    generation_config=genai.types.GenerationConfig(
+        response_mime_type="application/json",
+    )
+)
+
 # --- 4. S3 CLIENTS AND HELPERS ---
 def get_s3_resource():
     """Returns a boto3 S3 Resource object."""
@@ -79,15 +82,14 @@ def get_s3_client():
     )
 
 def get_location_from_coords(latitude, longitude):
-    """
-    Reverse geocodes the coordinates using the Google Maps Geocoding API.
-    (Contains the Google Maps logic you wanted to retain)
-    """
+    """Reverse geocodes the coordinates using the Google Maps Geocoding API."""
     if latitude == 0.0 and longitude == 0.0 or not GEOCODE_API_KEY:
         return "N/A (No Coords)"
+    
     try:
         url = f"https://maps.googleapis.com/maps/api/geocode/json?latlng={latitude},{longitude}&key={GEOCODE_API_KEY}"
         response = requests.get(url).json()
+        
         if response.get("status") == "OK" and response.get("results"):
             for result in response["results"]:
                 for component in result["address_components"]:
@@ -99,7 +101,7 @@ def get_location_from_coords(latitude, longitude):
         return f"Coords: {latitude}, {longitude} (Request Error)"
 
 def safe_generate(model, prompt_parts):
-    """Safety wrapper with retries for Gemini API calls. (No Change)"""
+    """Safety wrapper with retries for Gemini API calls."""
     retries = 3
     for attempt in range(retries):
         try:
@@ -111,39 +113,36 @@ def safe_generate(model, prompt_parts):
             else:
                 raise
 
-def score(file_stream, mimetype):
-    """
-    Uploads media to Gemini and returns classification.
-    (Contains the fix for the upload_file() keyword argument error).
-    """
+def score(file_stream, mimetype, custom_prompt=None):
+    """Uploads media to Gemini and returns classification."""
     file_stream.seek(0)
     sample_file = genai.upload_file(file_stream, mime_type=mimetype)
+    
+    final_prompt = custom_prompt if custom_prompt else prompt
 
+    print(f"🧠 Uploading file to Gemini...", end='', flush=True)
     while sample_file.state.name == "PROCESSING":
-        print(".", end="", flush=True)
+        print('.', end='', flush=True)
         time.sleep(10)
         sample_file = genai.get_file(sample_file.name)
+    print(" Complete.")
 
     if sample_file.state.name == "FAILED":
-        raise ValueError("File processing failed on Gemini side")
+        raise ValueError(sample_file.state.name)
 
-    response = safe_generate(model, [prompt, sample_file])
+    response = safe_generate(model, [final_prompt, sample_file]) 
     sample_file.delete()
 
-    match = re.findall(r"\{[\s\S]*\}", response.text)
-    if not match:
-        raise ValueError("Gemini response missing JSON output")
-
     try:
-        return json.loads(match[0])
+        return json.loads(response.text.strip())
     except Exception as e:
-        raise ValueError(f"Invalid JSON format in Gemini response: {e}")
+        raise ValueError(f"Invalid JSON format in Gemini response: {e}. Raw: {response.text}")
 
 # --- NEW: USER-SPECIFIC SEQUENTIAL CASE ID LOGIC ---
 def get_next_caseid(userid):
     """Fetches the next sequential case ID for a specific user and increments the counter."""
     s3_resource = get_s3_resource()
-    counter_key = "Master/user_case_counter.json" # Dedicated counter file
+    counter_key = "Master/user_case_counter.json" 
     
     try:
         counter_obj = s3_resource.Object(S3_BUCKET_NAME, counter_key)
@@ -152,12 +151,10 @@ def get_next_caseid(userid):
         print(f"WARN: User counter file missing or error ({e}). Initializing empty counter.")
         counter_data = {}
         
-    # Get the current ID for the specific user (starts at 1 if user not found)
     current_id = counter_data.get(userid, 1)
     
     next_id = current_id + 1
     
-    # Update the dictionary and write back to S3
     counter_data[userid] = next_id
     
     s3_resource.Object(S3_BUCKET_NAME, counter_key).put(
@@ -165,15 +162,11 @@ def get_next_caseid(userid):
         ContentType='application/json'
     )
     
-    # Return the current ID (e.g., 1, 2, 3...) for the user
     return str(current_id)
 
-# --- 5. CLASSIFIER CORE FUNCTION (MODIFIED TO UPDATE MASTER FILE) ---
+# --- 5. CLASSIFIER CORE FUNCTION ---
 def classifier(userid, caseid):
-    """
-    Main classification logic. This function UPDATES the existing Master record
-    created by handle_upload.
-    """
+    """Main classification logic. This function UPDATES the existing Master record."""
     print(f"\n🧠 Starting classification for {userid}/{caseid}...")
     s3_dir_path = f"{userid}/{caseid}/Pending"
     s3_case_path = f"{userid}/{caseid}"
@@ -189,22 +182,36 @@ def classifier(userid, caseid):
     mstr_key = "Master/mockdata_with_category_images.json"
     mstr_obj = s3_resource.Object(S3_BUCKET_NAME, mstr_key)
     record_index = -1
-    mstr_data = [] # Initialize mstr_data
+    mstr_data = [] 
+    resolved_location = "Unknown Location"
     
     try:
         # Load the Master data list
         mstr_data = json.load(mstr_obj.get()["Body"])
         
-        # 1. Find the index of the pending record
+        # 1. Find the index of the pending record and extract location
         for i, record in enumerate(mstr_data):
             if str(record.get("Case ID")) == caseid and str(record.get("User ID")) == userid:
                 record_index = i
+                resolved_location = record.get("Location", "Unknown Location") 
                 break
         
         if record_index == -1:
             raise FileNotFoundError("Pending record not found in Master data list. Cannot update.")
             
-        # 2. Get Media File for Classification
+        # 2. Check if result.json already exists (redundant check, but safer)
+        try:
+            s3_resource.Object(S3_BUCKET_NAME, result_key).load()
+            print(f"⏭️ Case {userid}/{caseid} already classified. Skipping.")
+            return json.dumps({"message": "Already classified"})
+        except ClientError as e:
+            error_code = e.response.get('Error', {}).get('Code')
+            if error_code not in ('NoSuchKey', '404'):
+                raise 
+        except:
+            pass
+            
+        # 3. Get Media File for Classification
         file_paths = [
             obj.key for obj in bucket.objects.filter(Prefix=s3_dir_path)
             if not obj.key.endswith("/") and "." in obj.key.split("/")[-1]
@@ -215,32 +222,35 @@ def classifier(userid, caseid):
         file_path = file_paths[0]
         ext = file_path.split(".")[-1].lower()
         
-        # 3. Download File & Classify
+        # 4. Download File & Classify
         object_data = bucket.Object(file_path)
         file_stream = io.BytesIO()
         object_data.download_fileobj(file_stream)
 
-        mimetype = mimetype_dict.get(ext.lower(), 'application/octet-stream') # Use get() for safety
-        response_text = score(file_stream, mimetype)
-
-        res = re.findall(r"\{[\s\S]*\}", response_text)
-        response_dict = json.loads(res[0]) 
-        label = response_dict["label"]
+        mimetype = mimetype_dict.get(ext.lower(), 'application/octet-stream')
+        
+        # --- MODIFIED PROMPT WITH LOCATION CONTEXT ---
+        location_context_prompt = (
+            f"{prompt}\n\n[CONTEXT: The incident occurred at or near: {resolved_location}]"
+        )
+        print(f"🗺️ Classifying with location: {resolved_location}")
+        
+        response_dict = score(file_stream, mimetype, custom_prompt=location_context_prompt)
+        
+        label = response_dict.get("label", "Unknown")
         final_response = response_dict
         
         print("The label is......", label)
         
-        # 4. Update the Master Record with Classification Results
+        # 5. Update the Master Record with Classification Results
         if label.lower() not in ("junk", "unknown", "error"):
             final_response["Department"] = department_dict.get(label, "Unknown")
             
-        # Update the Category, Status, Priority, and Department
         mstr_data[record_index]["Category"] = final_response["label"]
-        mstr_data[record_index]["Status"] = "Classified" # Set final status
+        mstr_data[record_index]["Status"] = "Classified"
         mstr_data[record_index]["Priority"] = final_response.get("Priority", "4")
-        mstr_data[record_index]["Department"] = final_response.get("Department", "None")
+        mstr_data[record_index]["Department"] = final_response.get("Department", "None") 
         
-        # 5. Write the UPDATED Master list back to S3
         mstr_obj.put(Body=json.dumps(mstr_data, indent=4).encode("utf-8"))
         print(f"✅ Successfully UPDATED Masterdata for Case {caseid}.")
 
@@ -248,17 +258,16 @@ def classifier(userid, caseid):
         print(f"❌ Error in classifier: {err}")
         final_response = {"label": "Classification Error", "reason": str(err), "Priority": "4"}
         
-        # If classification fails, ensure the Master record reflects the error
         if record_index != -1:
             mstr_data[record_index]["Category"] = "Classification Error"
             mstr_data[record_index]["Status"] = "Error"
             mstr_data[record_index]["Priority"] = final_response["Priority"]
             mstr_obj.put(Body=json.dumps(mstr_data, indent=4).encode("utf-8"))
 
-    # 6. Write Final result.json (The detailed response)
+    # 6. Write Final result.json
     result_obj = bucket.Object(f"{s3_case_path}/result.json")
     result_obj.put(Body=json.dumps(final_response).encode("utf-8"))
-
+    
     return json.dumps(final_response)
 
 # --- 6. SCHEDULER LOGIC ---
@@ -283,10 +292,9 @@ def find_and_classify_pending_cases():
                     cases_with_pending_media.add((userid, caseid))
         
         for userid, caseid in cases_with_pending_media:
-            # Check if classification has been run (result.json exists) 
             result_key = f"{userid}/{caseid}/result.json"
             try:
-                s3_resource.Object(S3_BUCKET_NAME, result_key).load()
+                get_s3_resource().Object(S3_BUCKET_NAME, result_key).load()
             except:
                 if (userid, caseid) not in pending_cases:
                     pending_cases.add((userid, caseid))
@@ -327,7 +335,7 @@ def handle_upload(userid, status):
         mstr_key = "Master/mockdata_with_category_images.json"
 
         # 1. GENERATE USER-SPECIFIC SEQUENTIAL CASE ID
-        caseid = get_next_caseid(userid) # <-- Pass userid to get individual counter
+        caseid = get_next_caseid(userid) 
         
         # 2. CHECK & PARSE METADATA
         metadata_file = request.files.get("jsonFile")
@@ -375,7 +383,6 @@ def handle_upload(userid, status):
         date_str = metadata_data.get("date", datetime.datetime.now().isoformat())
         date_object = datetime.datetime.strptime(date_str, "%Y-%m-%dT%H:%M:%S.%fZ").date()
         closed_date_str = (date_object + datetime.timedelta(days=10)).strftime("%Y-%m-%d")
-
         
         # Reverse geocoding for location resolution
         latitude = float(metadata_data.get("latitude", 0.0))
@@ -387,27 +394,17 @@ def handle_upload(userid, status):
         resolved_location = reported_city if is_city_valid else get_location_from_coords(latitude, longitude) 
 
         new_pending_record = {
-            # ...
-            "Location": resolved_location, # Uses the Geocoding API result here
-            "latitude": latitude, "longitude": longitude,
-            # ...
-        }
-        latitude = float(metadata_data.get("latitude", 0.0))
-        longitude = float(metadata_data.get("longitude", 0.0))
-        reported_city = metadata_data.get("city", "").strip()
-        is_city_valid = (reported_city and reported_city.lower() not in ["n/a", "undefined", "undefined telan"])
-        resolved_location = reported_city if is_city_valid else get_location_from_coords(latitude, longitude)
-
-        new_pending_record = {
             "Date": date_object.strftime("%Y-%m-%d"),
             "User ID": userid, "Case ID": caseid,
             "Location": resolved_location,
             "latitude": latitude, "longitude": longitude,
             "Category": "Pending Classification", # TEMPORARY LABEL
-            "Status": "Pending",                   # TEMPORARY STATUS
+            "Status": "Pending", # TEMPORARY STATUS
             "Priority": "4",
             "ClosedDate": closed_date_str,
             "MediaFiles": media_records,
+            "Description": metadata_data.get("description", ""), # ADDED: Saving the user's description
+            "Department": "Pending", # Initialize Department field
         }
         
         # Load existing Master data list
@@ -461,6 +458,8 @@ def get_cases_for_user(userid):
         # --- TRANSFORM MASTER RECORDS TO FRONTEND FORMAT ---
         formatted_cases = []
         for case in user_cases:
+            resolved_department = case.get("Department", case.get("Category", "N/A"))
+            
             formatted_cases.append({
                 "caseid": case.get("Case ID"),
                 "images": [
@@ -470,15 +469,16 @@ def get_cases_for_user(userid):
                 "jsonFiles": {
                     "metadata": {
                         "date": case.get("Date"),
-                        "city": case.get("Location"),
+                        "city": case.get("Location"), 
                         "latitude": case.get("latitude"),
-                        "longitude": case.get("longitude")
+                        "longitude": case.get("longitude"),
+                        "description": case.get("Description"), 
                     },
                     "result": {
                         "label": case.get("Category"),
                         "Priority": case.get("Priority"),
                         "reason": "", 
-                        "department": case.get("Department", case.get("Category")),
+                        "department": resolved_department, 
                     }
                 },
                 "status": case.get("Status", "Unknown")
@@ -494,21 +494,6 @@ def get_cases_for_user(userid):
         print(f"❌ Error fetching user cases: {e}")
         return jsonify({"error": "Failed to fetch user cases", "details": str(e)}), 500
 
-
-def get_location_from_coords(latitude, longitude):
-    """
-    Reverse geocodes the coordinates using the Google Maps Geocoding API.
-    """
-    if latitude == 0.0 and longitude == 0.0 or not GEOCODE_API_KEY:
-        return "N/A (No Coords)"
-    try:
-        url = f"https://maps.googleapis.com/maps/api/geocode/json?latlng={latitude},{longitude}&key={GEOCODE_API_KEY}"
-        response = requests.get(url).json()
-        # ... (logic to extract city/locality from response) ...
-        return result
-    except requests.exceptions.RequestException:
-        return f"Coords: {latitude}, {longitude} (Request Error)"
-
 @app.route('/')
 def home():
     return jsonify({"message": "Retizen AI Flask Backend Running"}), 200
@@ -517,7 +502,7 @@ def home():
 def service_worker():
     return "", 204
 
-# ---------------- AWS LAMBDA HANDLER (FOR REFERENCE ONLY) ----------------
+# ---------------- AWS LAMBDA HANDLER ----------------
 def handler(event, context):
     try:
         user_id = event["queryStringParameters"]["userid"]
