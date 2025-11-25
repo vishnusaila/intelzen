@@ -4,7 +4,7 @@ boto3
 Flask==2.3.3
 
 requests==2.31.0
-google-generativeai==0.4.1
+google-generativeai==0.7.2
 gunicorn==21.2.0
 python-dotenv==1.0.0
 Werkzeug==2.3.8
@@ -14,5 +14,6 @@ Flask-Cors==3.0.10
 
 
 schedule==1.2.0
+
 
 
