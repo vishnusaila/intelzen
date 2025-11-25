@@ -14,6 +14,7 @@ import requests
 from botocore.exceptions import ClientError
 import os
 import traceback 
+import tempfile # ADDED for robust file handling
 
 # --- 1. CONFIGURATION ---
 AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")
@@ -114,13 +115,27 @@ def safe_generate(model, prompt_parts):
 
 def score(file_stream, mimetype, custom_prompt=None):
     """
-    Uploads media to Gemini and returns classification.
-    FIX: Passing BytesIO stream positionally for current SDK compatibility.
+    Uploads media to Gemini using a temporary file path for robust compatibility.
+    FIX: Resolves the TypeError by writing BytesIO to a temp file.
     """
     file_stream.seek(0)
-    # FIX APPLIED HERE: Removed file=
-    sample_file = genai.upload_file(file_stream, mime_type=mimetype)
     
+    # 1. Write the BytesIO stream content to a temporary file path
+    temp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(delete=False) as temp_file:
+            temp_file.write(file_stream.read())
+            temp_path = temp_file.name
+        
+        # 2. Upload the file using the recognized file PATH (str)
+        sample_file = genai.upload_file(temp_path, mime_type=mimetype)
+    except Exception as e:
+        raise ValueError(f"Failed to create temp file or upload media: {e}")
+    finally:
+        # 3. Clean up the temporary file immediately
+        if temp_path and os.path.exists(temp_path):
+            os.unlink(temp_path)
+
     final_prompt = custom_prompt if custom_prompt else prompt
 
     print(f"🧠 Uploading file to Gemini...", end='', flush=True)
